@@ -5,7 +5,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,12 +16,6 @@ import trimesh
 from lxml import etree
 from PIL import Image
 from termcolor import cprint
-
-# Find the V-HACD v4.0 executable in the system path.
-# Note trimesh has not updated their code to work with v4.0 which is why we do not use
-# their `convex_decomposition` function.
-# TODO(kevin): Is there a way to assert that the V-HACD version is 4.0?
-_VHACD_EXECUTABLE = shutil.which("TestVHACD")
 
 # Names of the V-HACD output files.
 _VHACD_OUTPUTS = ["decomp.obj", "decomp.stl"]
@@ -57,28 +50,39 @@ class FillMode(enum.Enum):
 
 @dataclass(frozen=True)
 class VhacdArgs:
-    enable: bool = False
-    """enable convex decomposition using V-HACD"""
-    max_output_convex_hulls: int = 32
-    """maximum number of output convex hulls"""
-    voxel_resolution: int = 100_000
-    """total number of voxels to use"""
-    volume_error_percent: float = 1.0
-    """volume error allowed as a percentage"""
-    max_recursion_depth: int = 14
-    """maximum recursion depth"""
-    disable_shrink_wrap: bool = False
-    """do not shrink wrap output to source mesh"""
-    fill_mode: FillMode = FillMode.FLOOD
-    """fill mode"""
-    max_hull_vert_count: int = 64
-    """maximum number of vertices in the output convex hull"""
-    disable_async: bool = False
-    """do not run asynchronously"""
-    min_edge_length: int = 2
-    """minimum size of a voxel edge"""
-    split_hull: bool = False
-    """try to find optimal split plane location"""
+    # Default values taken from https://github.com/bulletphysics/bullet3/blob/master/Extras/VHACD/public/VHACD.h
+
+    concavity: float = 0.001
+    """Maximum allowed concavity | (range=0.0-1.0)"""
+    alpha: float = 0.05
+    """Controls the bias toward clipping along symmetry planes | (range=0.0-1.0)"""
+    beta: float = 0.05
+    """Controls the bias toward clipping along revolution axes | (range=0.0-1.0)"""
+    gamma: float = 0.0005
+    """Controls the maximum allowed concavity during the merge stage | (range=0.0-1.0)"""
+    minVolumePerCH: float = 0.0001
+    """Controls the adaptive sampling of the generated convex-hulls | (range=0.0-0.01)"""
+    resolution: int = 1_000_000
+    """Maximum number of voxels generated during the voxelization stage | (range=10,000-16,000,000)"""
+    maxNumVerticesPerCH: int = 64
+    """Controls the maximum number of triangles per convex-hull | (range=4-1024)"""
+    depth: int = 20
+    """Maximum number of clipping stages. During each split stage, parts
+    with a concavity higher than the user defined threshold are clipped
+    according the best clipping plane | (range=1-32)"""
+    planeDownsampling: int = 4
+    """Controls the granularity of the search for the \"best\" clipping plane | (range=1-16)"""
+    convexhullDownsampling: int = 4
+    """Controls the precision of the convex-hull generation process during
+    the clipping plane selection stage | (range=1-16)"""
+    pca: int = 0
+    """Enable/disable normalizing the mesh before applying the convex
+    decomposition | (range={0,1})"""
+    mode: int = 0
+    """0: voxel-based approximate convex decomposition
+    1: tetrahedron-based approximate convex decomposition | (range={0,1})"""
+    convexhullApproximation: int = 1
+    """ Enable/disable approximation when computing convex-hulls | (range={0,1}) """
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,8 @@ class Args:
     """compile the MJCF file to check for errors"""
     verbose: bool = False
     """print verbose output"""
+    enable_vhacd: bool = False
+    """enable convex decomposition using V-HACD"""
     vhacd_args: VhacdArgs = field(default_factory=VhacdArgs)
     """arguments to pass to V-HACD"""
     texture_resize_percent: float = 1.0
@@ -171,15 +177,7 @@ def resize_texture(filename: Path, resize_percent) -> None:
 
 
 def decompose_convex(filename: Path, work_dir: Path, vhacd_args: VhacdArgs) -> bool:
-    if not vhacd_args.enable:
-        return False
-
-    if _VHACD_EXECUTABLE is None:
-        logging.info(
-            "V-HACD was enabled but not found in the system path. Either install it "
-            "manually or run `bash install_vhacd.sh`. Skipping decomposition"
-        )
-        return False
+    import pybullet as p
 
     obj_file = filename.resolve()
     logging.info(f"Decomposing {obj_file}")
@@ -191,57 +189,31 @@ def decompose_convex(filename: Path, work_dir: Path, vhacd_args: VhacdArgs) -> b
         # Copy the obj file to the temporary directory.
         shutil.copy(obj_file, tmpdirname)
 
-        # Call V-HACD, suppressing output.
-        ret = subprocess.run(
-            [
-                f"{_VHACD_EXECUTABLE}",
-                obj_file.name,
-                "-o",
-                "obj",
-                "-h",
-                f"{vhacd_args.max_output_convex_hulls}",
-                "-r",
-                f"{vhacd_args.voxel_resolution}",
-                "-e",
-                f"{vhacd_args.volume_error_percent}",
-                "-d",
-                f"{vhacd_args.max_recursion_depth}",
-                "-s",
-                f"{int(not vhacd_args.disable_shrink_wrap)}",
-                "-f",
-                f"{vhacd_args.fill_mode.name.lower()}",
-                "-v",
-                f"{vhacd_args.max_hull_vert_count}",
-                "-a",
-                f"{int(not vhacd_args.disable_async)}",
-                "-l",
-                f"{vhacd_args.min_edge_length}",
-                "-p",
-                f"{int(vhacd_args.split_hull)}",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-            check=True,
-        )
-        if ret.returncode != 0:
-            logging.error(f"V-HACD failed on {filename}")
-            return False
+        # Call V-HACD
+        p.connect(p.DIRECT)
+        # TODO: Possibly make the out filename configurable?
+        p.vhacd(obj_file.name, "decomp.obj", "vhacd.log", **vhacd_args.__dict__)
+        p.disconnect()
+
+        # TODO: Crash handling
+
+        # Turn the single file into separate obj files:
+        mesh = trimesh.load("decomp.obj")
+
+        os.chdir(prev_dir)
+
+        submeshes = mesh.split()
+        for i, submesh in enumerate(submeshes):
+            submesh_out_path = os.path.join(
+                work_dir, f"{obj_file.stem}_collision_{i}.obj"
+            )
+            submesh.export(submesh_out_path)
 
         # Remove the original obj file and the V-HACD output files.
         for name in _VHACD_OUTPUTS + [obj_file.name]:
             file_to_delete = Path(tmpdirname) / name
             if file_to_delete.exists():
                 file_to_delete.unlink()
-
-        os.chdir(prev_dir)
-
-        # Get list of sorted collisions.
-        collisions = list(Path(tmpdirname).glob("*.obj"))
-        collisions.sort(key=lambda x: x.stem)
-
-        for i, filename in enumerate(collisions):
-            savename = str(work_dir / f"{obj_file.stem}_collision_{i}.obj")
-            shutil.move(str(filename), savename)
 
     return True
 
@@ -263,7 +235,9 @@ def process_obj(filename: Path, args: Args) -> None:
     logging.info(f"Saving processed meshes to {work_dir}")
 
     # Decompose the mesh into convex pieces if V-HACD is available.
-    decomp_success = decompose_convex(filename, work_dir, args.vhacd_args)
+    decomp_success = False
+    if args.enable_vhacd:
+        decomp_success = decompose_convex(filename, work_dir, args.vhacd_args)
 
     # Check if the OBJ files references an MTL file.
     # TODO(kevin): Should we support multiple MTL files?

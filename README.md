@@ -61,6 +61,7 @@ optional arguments:
   --save-mjcf           save an example XML (MJCF) file
   --compile-model       compile the MJCF file to check for errors
   --verbose             print verbose output
+  --enable-vhacd        enable convex decomposition using V-HACD
   --texture-resize-percent FLOAT
                         resize the texture to this percentage of the original size (default: 1.0)
   --overwrite           overwrite previous run output
@@ -69,27 +70,53 @@ optional arguments:
 optional vhacd_args arguments:
   arguments to pass to V-HACD
 
-  --vhacd-args.enable   enable convex decomposition using V-HACD
-  --vhacd-args.max-output-convex-hulls INT
-                        maximum number of output convex hulls (default: 32)
-  --vhacd-args.voxel-resolution INT
-                        total number of voxels to use (default: 100000)
-  --vhacd-args.volume-error-percent FLOAT
-                        volume error allowed as a percentage (default: 1.0)
-  --vhacd-args.max-recursion-depth INT
-                        maximum recursion depth (default: 14)
-  --vhacd-args.disable-shrink-wrap
-                        do not shrink wrap output to source mesh
-  --vhacd-args.fill-mode {FLOOD,SURFACE,RAYCAST}
-                        fill mode (default: FLOOD)
-  --vhacd-args.max-hull-vert-count INT
-                        maximum number of vertices in the output convex hull (default: 64)
-  --vhacd-args.disable-async
-                        do not run asynchronously
-  --vhacd-args.min-edge-length INT
-                        minimum size of a voxel edge (default: 2)
-  --vhacd-args.split-hull
-                        try to find optimal split plane location
+  --vhacd-args.concavity FLOAT
+                        Maximum allowed concavity | (range=0.0-1.0)
+                        (default: 0.001)
+  --vhacd-args.alpha FLOAT
+                        Controls the bias toward clipping along symmetry
+                        planes | (range=0.0-1.0) (default: 0.05)
+  --vhacd-args.beta FLOAT
+                        Controls the bias toward clipping along revolution
+                        axes | (range=0.0-1.0) (default: 0.05)
+  --vhacd-args.gamma FLOAT
+                        Controls the maximum allowed concavity during the
+                        merge stage | (range=0.0-1.0) (default:
+                        0.0005)
+  --vhacd-args.minVolumePerCH FLOAT
+                        Controls the adaptive sampling of the generated
+                        convex-hulls | (range=0.0-0.01) (default:
+                        0.0001)
+  --vhacd-args.resolution INT
+                        Maximum number of voxels generated during the
+                        voxelization stage | (range=10,000-16,000,000)
+                        (default: 1000000)
+  --vhacd-args.maxNumVerticesPerCH INT
+                        Controls the maximum number of triangles per convex-
+                        hull | (range=4-1024) (default: 64)
+  --vhacd-args.depth INT
+                        Maximum number of clipping stages. During each split
+                        stage, parts with a concavity higher than the user
+                        defined threshold are clipped according the best
+                        clipping plane | (range=1-32) (default: 20)
+  --vhacd-args.planeDownsampling INT
+                        Controls the granularity of the search for the
+                        \"best\" clipping plane | (range=1-16) (default:
+                        4)
+  --vhacd-args.convexhullDownsampling INT
+                        Controls the precision of the convex-hull generation
+                        process during the clipping plane selection stage |
+                        (range=1-16) (default: 4)
+  --vhacd-args.pca INT  Enable/disable normalizing the mesh before applying
+                        the convex decomposition | (range={0,1}) (default:
+                        0)
+  --vhacd-args.mode INT
+                        0: voxel-based approximate convex decomposition 1:
+                        tetrahedron-based approximate convex decomposition |
+                        (range={0,1}) (default: 0)
+  --vhacd-args.convexhullApproximation INT
+                        Enable/disable approximation when computing convex-
+                        hulls | (range={0,1}) (default: 1)
 ```
 
 [OBJ]: https://en.wikipedia.org/wiki/Wavefront_.obj_file
